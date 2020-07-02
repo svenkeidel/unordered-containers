@@ -37,7 +37,7 @@ module Data.HashMap.Base
     , update
     , alter
     , alterF
-    , subset
+    , subsetWith
 
       -- * Combine
       -- ** Union
@@ -1402,75 +1402,97 @@ alterFEager f !k m = (<$> f mv) $ \fres ->
 -- | /O(n*m)/ Subset of maps. A map is a subset of another map if the keys are
 -- subsets and their values are point-wise smaller:
 --
--- >>> subset (⊑) m1 m2 = keys m1 ⊆ keys m2 && and [ v1 ⊑ v2 | (k1,v1) <- toList m1; let v2 = m2 ! k1 ]
+-- >>> subsetWith (⊑) m1 m2 = keys m1 ⊆ keys m2 && and [ v1 ⊑ v2 | (k1,v1) <- toList m1; let v2 = m2 ! k1 ]
 --
 -- This defines a partial order on maps, for which 'union' is the least upper bound.
--- More specifically, @subset (⊑) m1 (unionWith (⊔) m1 m2)@ and @subset (⊑) m2 (unionWith (⊔) m1 m2)@.
+-- More specifically, @subsetWith (⊑) m1 (unionWith (⊔) m1 m2)@ and @subset (⊑) m2 (unionWith (⊔) m1 m2)@.
 --
 -- ==== __Examples__
 --
--- >>> subset (==) (fromList [(1,'a')]) (fromList [(1,'a'),(2,'b')])
+-- >>> subsetWith (==) (fromList [(1,'a')]) (fromList [(1,'a'),(2,'b')])
 -- True
 --
--- >>> subset (==) (fromList [(1,'a'),(2,'b')]) (fromList [(1,'a')])
+-- >>> subsetWith (==) (fromList [(1,'a'),(2,'b')]) (fromList [(1,'a')])
 -- False
 --
--- >>> subset (<=) (fromList [(1,'a')]) (fromList [(1,'b'),(2,'c')])
+-- >>> subsetWith (<=) (fromList [(1,'a')]) (fromList [(1,'b'),(2,'c')])
 -- True
-subset :: (Eq k, Hashable k) => (k -> v1 -> v2 -> Bool) -> HashMap k v1 -> HashMap k v2 -> Bool
-subset cmpV = go 0
+subsetWith :: (Eq k, Hashable k) => (k -> v1 -> v2 -> Bool) -> HashMap k v1 -> HashMap k v2 -> Bool
+subsetWith cmpV = go 0
   where
+    -- An empty map is always a subset of any other map.
     go !_ Empty _ = True
-    go _ _ Empty = False
-    go _ t1@(Leaf h1 (L k1 v1)) t2 = lookupCont (\_ -> False) (\v2 _ -> cmpV k1 v1 v2) h1 k1 t2
-    go _ (Collision {}) (Leaf _ _) = False
+
+    -- If the first map contains only one entry, lookup the key in the second map.
+    go _ (Leaf h1 (L k1 v1)) t2 = lookupCont (\_ -> False) (\v2 _ -> cmpV k1 v1 v2) h1 k1 t2
+
+    -- In this case we need to check that for each x in ls1, there is a y in ls2
+    -- such that x ⊑ y. This is the worst case complexity-wise since it requires a O(m*n) check.
     go _ (Collision h1 ls1) (Collision h2 ls2) =
       h1 == h2 && subsetArray cmpV ls1 ls2
-    go s t1@(Collision h1 ls1) (BitmapIndexed b ls2)
+
+    -- To check ls1 ⊆ ls2, we only need to check the entries in ls2 with the hash h1.
+    go s t1@(Collision h1 _) (BitmapIndexed b ls2)
         | b .&. m == 0 = False
         | otherwise    =
             go (s+bitsPerSubkey) t1 (A.index ls2 (sparseIndex b m))
       where m = mask h1 s
+
+    -- Similar to the previous case we need to traverse l2 at the index for the hash h1.
     go s t1@(Collision h1 ls1) (Full ls2) =
       go (s+bitsPerSubkey) t1 (A.index ls2 (index h1 s))
-     go _ (BitmapIndexed b1 ls1) (BitmapIndexed b2 ls2) = _
-    go s (Full ls1) (Full ls2) = and (A.length ls1) ls1 ls2
 
-    and j xs ys
-      | j >= 0    = go (s+bitsPerSubkey) (A.index xs j) (A.index ys j) &&
-                    and (j-1) xs ys
+    go s (BitmapIndexed b1 ls1) (Collision h2 ls2) = undefined -- _
+    go s (Full ls1) (Collision h2 ls2) = undefined -- _
+
+    -- In cases where the first and second map are bitmap indexed or full,
+    -- traverse down the tree at the appropriate indices.
+    go s (BitmapIndexed b1 ls1) (BitmapIndexed b2 ls2) =
+      bitmapIndexedSubset (go (s+bitsPerSubkey)) b1 ls1 b2 ls2
+    go s (BitmapIndexed b1 ls1) (Full ls2) =
+      bitmapIndexedSubset (go (s+bitsPerSubkey)) b1 ls1 fullNodeMask ls2
+    go s (Full ls1) (Full ls2) =
+      bitmapIndexedSubset (go (s+bitsPerSubkey)) fullNodeMask ls1 fullNodeMask ls2
+
+    -- TODO: I'm not sure about these cases and need help. If we cleared up all
+    -- these cases, we can replace them with a catch-all case go _ _ _ = False
+
+    -- If the second map is empty, but the first is not, it cannot be a subset.
+    go _ _ Empty = False
+
+    -- A collision always contains more entries than a leaf, hence it cannot be a subset.
+    go _ (Collision {}) (Leaf {}) = False
+
+    -- A bitmap always contains more than one entry, hence it cannot be a subset of a leaf.
+    go _ (BitmapIndexed {}) (Leaf {}) = False
+    go _ (Full {}) (Leaf {}) = False
+
+    -- A bitmap index node contains less nodes than a full node. Hence it cannot be a subset.
+    go _ (Full {}) (BitmapIndexed {}) = False
+
+
+-- | /O(min n m))/ Checks if a bitmap indexed node is a subset of another.
+bitmapIndexedSubset :: (HashMap k v1 -> HashMap k v2 -> Bool) -> Bitmap -> A.Array (HashMap k v1) -> Bitmap -> A.Array (HashMap k v2) -> Bool
+bitmapIndexedSubset comp b1 ary1 b2 ary2 = bitmapSubset b1 b2 && go 0 0 b1 b2
+  where
+    go :: Int -> Int -> Bitmap -> Bitmap -> Bool
+    go i j b1 b2
+      | b1 > 0 =
+         -- In case b1 = 1 and b2 = 1, check ary1[i] <= ary2[j] and increment i and j.
+         if isLsbOne b1 then
+            comp (A.index ary1 i) (A.index ary2 j) &&
+            go (i+1) (j+1) (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+
+         -- In case b1 = 0 and b2 = 1, do not check ary1[i] <= ary2[j] but increment j.
+         else if isLsbOne b2 then
+                   go i (j+1) (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+
+         -- In case b1 = 0 and b2 = 0, do not check ary1[i] <= ary2[j] and do not increment i and j.
+         -- TODO: Figure out how to avoid this case by filtering out the 0 bits of b1|b2 and b1&b2.
+         else
+           go i j (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+
       | otherwise = True
-
-    fullSize = 2^bitsPerSubkey
-
-    -- go _ (BitmapIndexed {}) (Leaf {}) = _
-    -- go _ (BitmapIndexed {}) (Collision {}) = _
-    -- go _ (BitmapIndexed {}) (BitmapIndexed {}) = _
-    -- go _ (BitmapIndexed {}) (Full {}) = _
-    -- go _ (Full {}) (Leaf {}) = _
-    -- go _ (Full {}) (Collision {}) = _
-    -- go _ (Full {}) (BitmapIndexed {}) = _
-    -- go s (Full ls1) (Full ls2) = _
-    --
-    -- Key: Val
-    -- 1223: A
-    -- 1235: B
-    -- 1236: C
-    -- M1 =
-    --   Node [ (12,
-    --     Node [ (23, A),
-    --            (35, B),
-    --          ]
-    --   )]
-    --
-    -- M2 =
-    --   Node [ (12,
-    --     Node [ (23, A),
-    --            (35, B),
-    --            (35, C)
-    --          ]
-    --   )]
-
 
 ------------------------------------------------------------------------
 -- * Combine
@@ -1591,16 +1613,25 @@ unionArrayBy f b1 b2 ary1 ary2 = A.run $ do
     -- it would be nice if we could shift m by more than 1 each time
     let ba = b1 .&. b2
         go !i !i1 !i2 !m
+            -- Stop iterating if the most significant bit of m shifted to the left of b'
             | m > b'        = return ()
+
+    
             | b' .&. m == 0 = go i i1 i2 (m `unsafeShiftL` 1)
+
+            -- keys are both in ary1 and ary2
             | ba .&. m /= 0 = do
                 x1 <- A.indexM ary1 i1
                 x2 <- A.indexM ary2 i2
                 A.write mary i $! f x1 x2
                 go (i+1) (i1+1) (i2+1) (m `unsafeShiftL` 1)
+
+            -- key in ary1, but not in ary2
             | b1 .&. m /= 0 = do
                 A.write mary i =<< A.indexM ary1 i1
                 go (i+1) (i1+1) (i2  ) (m `unsafeShiftL` 1)
+
+            -- key in ary2, but not in ary1
             | otherwise     = do
                 A.write mary i =<< A.indexM ary2 i2
                 go (i+1) (i1  ) (i2+1) (m `unsafeShiftL` 1)
@@ -2211,6 +2242,16 @@ fullNodeMask = complement (complement 0 `unsafeShiftL` maxChildren)
 ptrEq :: a -> a -> Bool
 ptrEq x y = isTrue# (reallyUnsafePtrEquality# x y ==# 1#)
 {-# INLINE ptrEq #-}
+
+-- | Checks if the first bitmap is subset of the second bitmap.
+bitmapSubset :: Bitmap -> Bitmap -> Bool
+bitmapSubset x y = x .|. y == y
+{-# INLINE bitmapSubset #-}
+
+-- | Checks if the least significant bit in a word is 1.
+isLsbOne :: Word -> Bool
+isLsbOne b = b .&. 1 == 1
+{-# INLINE isLsbOne #-}
 
 ------------------------------------------------------------------------
 -- IsList instance
