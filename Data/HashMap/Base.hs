@@ -37,6 +37,7 @@ module Data.HashMap.Base
     , update
     , alter
     , alterF
+    , subset
 
       -- * Combine
       -- ** Union
@@ -1398,6 +1399,78 @@ alterFEager f !k m = (<$> f mv) $ \fres ->
 {-# INLINABLE alterFEager #-}
 #endif
 
+-- | /O(n*m)/ Subset of maps. A map is a subset of another map if the keys are
+-- subsets and their values are point-wise smaller:
+--
+-- >>> subset (⊑) m1 m2 = keys m1 ⊆ keys m2 && and [ v1 ⊑ v2 | (k1,v1) <- toList m1; let v2 = m2 ! k1 ]
+--
+-- This defines a partial order on maps, for which 'union' is the least upper bound.
+-- More specifically, @subset (⊑) m1 (unionWith (⊔) m1 m2)@ and @subset (⊑) m2 (unionWith (⊔) m1 m2)@.
+--
+-- ==== __Examples__
+--
+-- >>> subset (==) (fromList [(1,'a')]) (fromList [(1,'a'),(2,'b')])
+-- True
+--
+-- >>> subset (==) (fromList [(1,'a'),(2,'b')]) (fromList [(1,'a')])
+-- False
+--
+-- >>> subset (<=) (fromList [(1,'a')]) (fromList [(1,'b'),(2,'c')])
+-- True
+subset :: (Eq k, Hashable k) => (k -> v1 -> v2 -> Bool) -> HashMap k v1 -> HashMap k v2 -> Bool
+subset cmpV = go 0
+  where
+    go !_ Empty _ = True
+    go _ _ Empty = False
+    go _ t1@(Leaf h1 (L k1 v1)) t2 = lookupCont (\_ -> False) (\v2 _ -> cmpV k1 v1 v2) h1 k1 t2
+    go _ (Collision {}) (Leaf _ _) = False
+    go _ (Collision h1 ls1) (Collision h2 ls2) =
+      h1 == h2 && subsetArray cmpV ls1 ls2
+    go s t1@(Collision h1 ls1) (BitmapIndexed b ls2)
+        | b .&. m == 0 = False
+        | otherwise    =
+            go (s+bitsPerSubkey) t1 (A.index ls2 (sparseIndex b m))
+      where m = mask h1 s
+    go s t1@(Collision h1 ls1) (Full ls2) =
+      go (s+bitsPerSubkey) t1 (A.index ls2 (index h1 s))
+     go _ (BitmapIndexed b1 ls1) (BitmapIndexed b2 ls2) = _
+    go s (Full ls1) (Full ls2) = and (A.length ls1) ls1 ls2
+
+    and j xs ys
+      | j >= 0    = go (s+bitsPerSubkey) (A.index xs j) (A.index ys j) &&
+                    and (j-1) xs ys
+      | otherwise = True
+
+    fullSize = 2^bitsPerSubkey
+
+    -- go _ (BitmapIndexed {}) (Leaf {}) = _
+    -- go _ (BitmapIndexed {}) (Collision {}) = _
+    -- go _ (BitmapIndexed {}) (BitmapIndexed {}) = _
+    -- go _ (BitmapIndexed {}) (Full {}) = _
+    -- go _ (Full {}) (Leaf {}) = _
+    -- go _ (Full {}) (Collision {}) = _
+    -- go _ (Full {}) (BitmapIndexed {}) = _
+    -- go s (Full ls1) (Full ls2) = _
+    --
+    -- Key: Val
+    -- 1223: A
+    -- 1235: B
+    -- 1236: C
+    -- M1 =
+    --   Node [ (12,
+    --     Node [ (23, A),
+    --            (35, B),
+    --          ]
+    --   )]
+    --
+    -- M2 =
+    --   Node [ (12,
+    --     Node [ (23, A),
+    --            (35, B),
+    --            (35, C)
+    --          ]
+    --   )]
+
 
 ------------------------------------------------------------------------
 -- * Combine
@@ -2064,6 +2137,15 @@ updateOrConcatWithKey f ary1 ary2 = A.run $ do
     go n1 0
     return mary
 {-# INLINABLE updateOrConcatWithKey #-}
+
+-- | /O(n*m)/ Check if the first array is a subset of the second array.
+subsetArray :: Eq k => (k -> v1 -> v2 -> Bool) -> A.Array (Leaf k v1) -> A.Array (Leaf k v2) -> Bool
+subsetArray cmpV ary1 ary2 = A.length ary1 <= A.length ary2 && go 0 (A.length ary1)
+  where
+    go !i n
+      | i >= n = True
+      | otherwise = let (L k1 v1) = A.index ary1 i
+                    in lookupInArrayCont (\_ -> False) (\v2 _ -> cmpV k1 v1 v2 && go (i+1) n) k1 ary2
 
 ------------------------------------------------------------------------
 -- Manually unrolled loops

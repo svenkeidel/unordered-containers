@@ -45,6 +45,7 @@ module Data.HashMap.Array
     , foldr
     , foldr'
     , foldMap
+    , any
 
     , thaw
     , map
@@ -65,9 +66,9 @@ import GHC.ST (ST(..))
 import Control.Monad.ST (stToIO)
 
 #if __GLASGOW_HASKELL__ >= 709
-import Prelude hiding (filter, foldMap, foldr, foldl, length, map, read, traverse)
+import Prelude hiding (filter, foldMap, foldr, foldl, length, map, read, traverse, any)
 #else
-import Prelude hiding (filter, foldr, foldl, length, map, read)
+import Prelude hiding (filter, foldr, foldl, length, map, read, any)
 #endif
 
 #if __GLASGOW_HASKELL__ >= 710
@@ -446,6 +447,15 @@ foldMap f = \ary0 -> case length ary0 of
           if i == lst then fx else fx `mappend` go (i + 1)
     in go 0
 {-# INLINE foldMap #-}
+
+any :: (a -> Bool) -> Array a -> Bool
+any predicate = \ary0 -> go ary0 (length ary0)
+  where
+    go _ary (-1) = False
+    go ary i
+      | (# x #) <- index# ary i
+      = predicate x || go ary (i-1)
+{-# INLINE any #-}
 
 undefinedElem :: a
 undefinedElem = error "Data.HashMap.Array: Undefined element"
