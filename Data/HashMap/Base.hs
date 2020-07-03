@@ -39,6 +39,7 @@ module Data.HashMap.Base
     , alterF
     , subset
     , subsetWith
+    , Key(..)
 
       -- * Combine
       -- ** Union
@@ -172,6 +173,15 @@ import Data.Functor.Identity (Identity (..))
 import Control.Applicative (Const (..))
 import Data.Coerce (coerce)
 
+-- Used for debugging
+import Numeric(showIntAtBase)
+import Data.Char (intToDigit)
+import Debug.Trace
+newtype Key = K { unK :: Int } deriving (Eq, Ord, Read)
+instance Show Key where show k = show (unK k)
+instance Hashable Key where hashWithSalt salt k = H.hashWithSalt salt (unK k) `mod` 20
+
+
 -- | A set of values.  A set cannot contain duplicate values.
 ------------------------------------------------------------------------
 
@@ -180,7 +190,7 @@ hash :: H.Hashable a => a -> Hash
 hash = fromIntegral . H.hash
 
 data Leaf k v = L !k v
-  deriving (Eq)
+  deriving (Eq,Show)
 
 instance (NFData k, NFData v) => NFData (Leaf k v) where
     rnf (L k v) = rnf k `seq` rnf v
@@ -319,9 +329,19 @@ instance (Eq k, Hashable k, Read k, Read e) => Read (HashMap k e) where
 
     readListPrec = readListPrecDefault
 
+-- instance (Show k, Show v) => Show (HashMap k v) where
+    -- showsPrec d m = showParen (d > 10) $
+    --   showString "fromList " . shows (toList m)
+
 instance (Show k, Show v) => Show (HashMap k v) where
-    showsPrec d m = showParen (d > 10) $
-      showString "fromList " . shows (toList m)
+  showsPrec d m = showParen (d > 10) $ case m of
+    Empty -> showString "[]"
+    Leaf h (L k v) -> shows k . showString "@" . showBin h . showString " ↦ " . shows v
+    Collision h arr -> showString "Collission " . showBin h . showChar ' ' . shows arr
+    BitmapIndexed b arr -> showString "BitmapIndexed " . showBin b . showChar ' ' . shows arr
+    Full arr -> showString "Full " . shows arr
+    where
+      showBin x = showIntAtBase 2 intToDigit x
 
 instance Traversable (HashMap k) where
     traverse f = traverseWithKey (const f)
@@ -581,12 +601,12 @@ lookup k m = case lookup# k m of
 {-# INLINE lookup #-}
 
 lookup# :: (Eq k, Hashable k) => k -> HashMap k v -> (# (# #) | v #)
-lookup# k m = lookupCont (\_ -> (# (# #) | #)) (\v _i -> (# | v #)) (hash k) k m
+lookup# k m = lookupCont (\_ -> (# (# #) | #)) (\v _i -> (# | v #)) (hash k) k 0 m
 {-# INLINABLE lookup# #-}
 
 #else
 
-lookup k m = lookupCont (\_ -> Nothing) (\v _i -> Just v) (hash k) k m
+lookup k m = lookupCont (\_ -> Nothing) (\v _i -> Just v) (hash k) k 0 m
 {-# INLINABLE lookup #-}
 #endif
 
@@ -605,7 +625,7 @@ lookup' h k m = case lookupRecordCollision# h k m of
   (# | (# a, _i #) #) -> Just a
 {-# INLINE lookup' #-}
 #else
-lookup' h k m = lookupCont (\_ -> Nothing) (\v _i -> Just v) h k m
+lookup' h k m = lookupCont (\_ -> Nothing) (\v _i -> Just v) h k 0 m
 {-# INLINABLE lookup' #-}
 #endif
 
@@ -640,13 +660,13 @@ lookupRecordCollision h k m = case lookupRecordCollision# h k m of
 -- into lookupCont because inlining takes care of that.
 lookupRecordCollision# :: Eq k => Hash -> k -> HashMap k v -> (# (# #) | (# v, Int# #) #)
 lookupRecordCollision# h k m =
-    lookupCont (\_ -> (# (# #) | #)) (\v (I# i) -> (# | (# v, i #) #)) h k m
+    lookupCont (\_ -> (# (# #) | #)) (\v (I# i) -> (# | (# v, i #) #)) h k 0 m
 -- INLINABLE to specialize to the Eq instance.
 {-# INLINABLE lookupRecordCollision# #-}
 
 #else /* GHC < 8.2 so there are no unboxed sums */
 
-lookupRecordCollision h k m = lookupCont (\_ -> Absent) Present h k m
+lookupRecordCollision h k m = lookupCont (\_ -> Absent) Present h k 0 m
 {-# INLINABLE lookupRecordCollision #-}
 #endif
 
@@ -668,8 +688,10 @@ lookupCont ::
   => ((# #) -> r)    -- Absent continuation
   -> (v -> Int -> r) -- Present continuation
   -> Hash -- The hash of the key
-  -> k -> HashMap k v -> r
-lookupCont absent present !h0 !k0 !m0 = go h0 k0 0 m0
+  -> k
+  -> Int -- The subkey
+  -> HashMap k v -> r
+lookupCont absent present !h0 !k0 !s0 !m0 = go h0 k0 s0 m0
   where
     go :: Eq k => Hash -> k -> Int -> HashMap k v -> r
     go !_ !_ !_ Empty = absent (# #)
@@ -1400,7 +1422,7 @@ alterFEager f !k m = (<$> f mv) $ \fres ->
 {-# INLINABLE alterFEager #-}
 #endif
 
-subset :: (Eq k, Hashable k, Eq v) => HashMap k v -> HashMap k v -> Bool
+subset :: (Show k, Show v, Eq k, Hashable k, Eq v) => HashMap k v -> HashMap k v -> Bool
 subset = subsetWith (const (==))
 {-# INLINE subset #-}
 
@@ -1412,6 +1434,8 @@ subset = subsetWith (const (==))
 -- This defines a partial order on maps, for which 'union' is the least upper bound.
 -- More specifically, @subsetWith (⊑) m1 (unionWith (⊔) m1 m2)@ and @subset (⊑) m2 (unionWith (⊔) m1 m2)@.
 --
+-- Note: Since this operation does a structural comparison, it forces the first map into normal form.
+--
 -- ==== __Examples__
 --
 -- >>> subsetWith (==) (fromList [(1,'a')]) (fromList [(1,'a'),(2,'b')])
@@ -1422,42 +1446,45 @@ subset = subsetWith (const (==))
 --
 -- >>> subsetWith (<=) (fromList [(1,'a')]) (fromList [(1,'b'),(2,'c')])
 -- True
-subsetWith :: (Eq k, Hashable k) => (k -> v1 -> v2 -> Bool) -> HashMap k v1 -> HashMap k v2 -> Bool
-subsetWith cmpV = go 0
+subsetWith :: (Show k, Show v1, Show v2, Eq k, Hashable k) => (k -> v1 -> v2 -> Bool) -> HashMap k v1 -> HashMap k v2 -> Bool
+subsetWith comp = go0 0
   where
+    go0 = go
+    -- go0 s m1 m2 = let r = trace (show m1 ++ " ⊆ " ++ show m2 ++ "\n") $ go s m1 m2 in trace (show m1 ++ " ⊆ " ++ show m2 ++ " -> " ++ show r ++ "\n") $ r
+
     -- An empty map is always a subset of any other map.
     go !_ Empty _ = True
 
     -- If the first map contains only one entry, lookup the key in the second map.
-    go _ (Leaf h1 (L k1 v1)) t2 = lookupCont (\_ -> False) (\v2 _ -> cmpV k1 v1 v2) h1 k1 t2
+    go s (Leaf h1 (L k1 v1)) t2 = lookupCont (\_ -> False) (\v2 _ -> comp k1 v1 v2) h1 k1 s t2
 
     -- In this case we need to check that for each x in ls1, there is a y in ls2
     -- such that x ⊑ y. This is the worst case complexity-wise since it requires a O(m*n) check.
     go _ (Collision h1 ls1) (Collision h2 ls2) =
-      h1 == h2 && subsetArray cmpV ls1 ls2
+      h1 == h2 && subsetArray comp ls1 ls2
 
     -- To check ls1 ⊆ ls2, we only need to check the entries in ls2 with the hash h1.
     go s t1@(Collision h1 _) (BitmapIndexed b ls2)
         | b .&. m == 0 = False
         | otherwise    =
-            go (s+bitsPerSubkey) t1 (A.index ls2 (sparseIndex b m))
+            go0 (s+bitsPerSubkey) t1 (A.index ls2 (sparseIndex b m))
       where m = mask h1 s
 
     -- Similar to the previous case we need to traverse l2 at the index for the hash h1.
-    go s t1@(Collision h1 ls1) (Full ls2) =
-      go (s+bitsPerSubkey) t1 (A.index ls2 (index h1 s))
+    go s t1@(Collision h1 _) (Full ls2) =
+      go0 (s+bitsPerSubkey) t1 (A.index ls2 (index h1 s))
 
-    go s (BitmapIndexed b1 ls1) (Collision h2 ls2) = undefined -- _
-    go s (Full ls1) (Collision h2 ls2) = undefined -- _
+    go s (BitmapIndexed b1 ls1) (Collision h2 ls2) = undefined s b1 ls1 h2 ls2 -- ???
+    go s (Full ls1) (Collision h2 ls2) = undefined s ls1 h2 ls2 -- ???
 
     -- In cases where the first and second map are bitmap indexed or full,
     -- traverse down the tree at the appropriate indices.
     go s (BitmapIndexed b1 ls1) (BitmapIndexed b2 ls2) =
-      bitmapIndexedSubset (go (s+bitsPerSubkey)) b1 ls1 b2 ls2
+      subsetBitmapIndexed (go0 (s+bitsPerSubkey)) b1 ls1 b2 ls2
     go s (BitmapIndexed b1 ls1) (Full ls2) =
-      bitmapIndexedSubset (go (s+bitsPerSubkey)) b1 ls1 fullNodeMask ls2
+      subsetBitmapIndexed (go0 (s+bitsPerSubkey)) b1 ls1 fullNodeMask ls2
     go s (Full ls1) (Full ls2) =
-      bitmapIndexedSubset (go (s+bitsPerSubkey)) fullNodeMask ls1 fullNodeMask ls2
+      subsetBitmapIndexed (go0 (s+bitsPerSubkey)) fullNodeMask ls1 fullNodeMask ls2
 
     -- TODO: I'm not sure about these cases and need help. If we cleared up all
     -- these cases, we can replace them with a catch-all case go _ _ _ = False
@@ -1476,28 +1503,28 @@ subsetWith cmpV = go 0
     go _ (Full {}) (BitmapIndexed {}) = False
 
 
--- | /O(min n m))/ Checks if a bitmap indexed node is a subset of another.
-bitmapIndexedSubset :: (HashMap k v1 -> HashMap k v2 -> Bool) -> Bitmap -> A.Array (HashMap k v1) -> Bitmap -> A.Array (HashMap k v2) -> Bool
-bitmapIndexedSubset comp b1 ary1 b2 ary2 = bitmapSubset b1 b2 && go 0 0 b1 b2
+-- | /O(min n m))/ hecks if a bitmap indexed node is a subset of another.
+subsetBitmapIndexed :: (HashMap k v1 -> HashMap k v2 -> Bool) -> Bitmap -> A.Array (HashMap k v1) -> Bitmap -> A.Array (HashMap k v2) -> Bool
+subsetBitmapIndexed comp b1 ary1 b2 ary2 = subsetBitmaps && go 0 0 (b1Orb2 .&. negate b1Orb2)
   where
-    go :: Int -> Int -> Bitmap -> Bitmap -> Bool
-    go i j b1 b2
-      | b1 > 0 =
-         -- In case b1 = 1 and b2 = 1, check ary1[i] <= ary2[j] and increment i and j.
-         if isLsbOne b1 then
-            comp (A.index ary1 i) (A.index ary2 j) &&
-            go (i+1) (j+1) (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+    go :: Int -> Int -> Bitmap -> Bool
+    go i j m
+      | m > b1Orb2 = True
 
-         -- In case b1 = 0 and b2 = 1, do not check ary1[i] <= ary2[j] but increment j.
-         else if isLsbOne b2 then
-                   go i (j+1) (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+      -- In case a key is both in ary1 and ary2, check ary1[i] <= ary2[j] and
+      -- increment the indices i and j.
+      | b1Andb2 .&. m /= 0 = comp (A.index ary1 i) (A.index ary2 j) &&
+                             go (i+1) (j+1) (m `unsafeShiftL` 1)
 
-         -- In case b1 = 0 and b2 = 0, do not check ary1[i] <= ary2[j] and do not increment i and j.
-         -- TODO: Figure out how to avoid this case by filtering out the 0 bits of b1|b2 and b1&b2.
-         else
-           go i j (unsafeShiftR b1 1) (unsafeShiftR b2 1)
+      -- In case a key occurs in ary1, but not ary2, only increment index j.
+      | b2 .&. m /= 0 = go i (j+1) (m `unsafeShiftL` 1)
 
-      | otherwise = True
+      -- In case a key neither occurs in ary1 nor ary2, continue.
+      | otherwise = go i j (m `unsafeShiftL` 1)
+
+    b1Andb2 = b1 .&. b2
+    b1Orb2  = b1 .|. b2
+    subsetBitmaps = b1Orb2 == b2
 
 ------------------------------------------------------------------------
 -- * Combine
@@ -1621,7 +1648,7 @@ unionArrayBy f b1 b2 ary1 ary2 = A.run $ do
             -- Stop iterating if the most significant bit of m shifted to the left of b'
             | m > b'        = return ()
 
-    
+            -- Key is neither in ary1 and ary2
             | b' .&. m == 0 = go i i1 i2 (m `unsafeShiftL` 1)
 
             -- keys are both in ary1 and ary2
@@ -2247,16 +2274,6 @@ fullNodeMask = complement (complement 0 `unsafeShiftL` maxChildren)
 ptrEq :: a -> a -> Bool
 ptrEq x y = isTrue# (reallyUnsafePtrEquality# x y ==# 1#)
 {-# INLINE ptrEq #-}
-
--- | Checks if the first bitmap is subset of the second bitmap.
-bitmapSubset :: Bitmap -> Bitmap -> Bool
-bitmapSubset x y = x .|. y == y
-{-# INLINE bitmapSubset #-}
-
--- | Checks if the least significant bit in a word is 1.
-isLsbOne :: Word -> Bool
-isLsbOne b = b .&. 1 == 1
-{-# INLINE isLsbOne #-}
 
 ------------------------------------------------------------------------
 -- IsList instance

@@ -50,6 +50,8 @@ module Data.HashMap.Strict.Base
     , update
     , alter
     , alterF
+    , subset
+    , subsetWith
 
       -- * Combine
       -- ** Union
