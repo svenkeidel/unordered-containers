@@ -33,7 +33,10 @@ import Test.QuickCheck.Poly (A, B)
 
 -- Key type that generates more hash collisions.
 newtype Key = K { unK :: Int }
-            deriving (Arbitrary, Eq, Ord, Read, Show)
+            deriving (Arbitrary, Eq, Ord, Read)
+
+instance Show Key where
+  show k = show (unK k)
 
 instance Hashable Key where
     hashWithSalt salt k = hashWithSalt salt (unK k) `mod` 20
@@ -224,6 +227,28 @@ pAlterFLookup k f =
   getConst . M.alterF (Const . apply f :: Maybe A -> Const B (Maybe A)) k
   `eq`
   getConst . HM.alterF (Const . apply f) k
+
+pSubsetReflexive :: [(Key, Int)] -> Bool
+pSubsetReflexive xs =
+  let m = HM.fromList xs
+  in HM.subset m m
+
+pSubsetUnion :: [(Key, Int)] -> [(Key, Int)] -> Bool
+pSubsetUnion xs ys =
+  let m1 = HM.fromList xs
+      m2 = HM.fromList ys
+  in HM.subset m1 (HM.union m1 m2)
+
+pSubsetDelete :: [(Key,Int)] -> Bool
+pSubsetDelete xs@((k,_):_) =
+  let m = HM.fromList xs
+  in HM.subset (HM.delete k m) m
+pSubsetDelete [] = True
+
+pSubsetInsert :: Key -> Int -> [(Key,Int)] -> Bool
+pSubsetInsert k v xs =
+  let m = HM.fromList xs
+  in HM.member k m || HM.subset m (HM.insert k v m)
 
 ------------------------------------------------------------------------
 -- ** Combine
@@ -439,6 +464,12 @@ tests =
       , testProperty "alterFInsertWith" pAlterFInsertWith
       , testProperty "alterFDelete" pAlterFDelete
       , testProperty "alterFLookup" pAlterFLookup
+      , testGroup "subset"
+        [ testProperty "m ⊆ m" pSubsetReflexive
+        , testProperty "m1 ⊆ m1 ∪ m2" pSubsetUnion
+        , testProperty "delete k m ⊆ m" pSubsetDelete
+          , testProperty "k ∉ m  ⇒  m ⊆ insert k v m" pSubsetInsert
+        ]
       ]
     -- Combine
     , testProperty "union" pUnion

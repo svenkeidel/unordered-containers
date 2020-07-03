@@ -37,6 +37,7 @@ module Data.HashMap.Base
     , update
     , alter
     , alterF
+    , subset
     , subsetWith
 
       -- * Combine
@@ -1398,6 +1399,10 @@ alterFEager f !k m = (<$> f mv) $ \fres ->
            Present v _ -> Just v
 {-# INLINABLE alterFEager #-}
 #endif
+
+subset :: (Eq k, Hashable k, Eq v) => HashMap k v -> HashMap k v -> Bool
+subset = subsetWith (const (==))
+{-# INLINE subset #-}
 
 -- | /O(n*m)/ Subset of maps. A map is a subset of another map if the keys are
 -- subsets and their values are point-wise smaller:
