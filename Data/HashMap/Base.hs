@@ -1474,8 +1474,11 @@ subsetWith comp = go0 0
     go s t1@(Collision h1 _) (Full ls2) =
       go0 (s+bitsPerSubkey) t1 (A.index ls2 (index h1 s))
 
-    go s (BitmapIndexed b1 ls1) (Collision h2 ls2) = undefined s b1 ls1 h2 ls2 -- ???
-    go s (Full ls1) (Collision h2 ls2) = undefined s ls1 h2 ls2 -- ???
+    -- Insert the collision into a bitmap indexed node and recurse.
+    go s t1@(BitmapIndexed {}) t2@(Collision h2 _) =
+      go s t1 (BitmapIndexed (mask h2 s) (A.singleton t2))
+    go s t1@(Full {}) t2@(Collision h2 ls2) =
+      go s t1 (BitmapIndexed (mask h2 s) (A.singleton t2))
 
     -- In cases where the first and second map are bitmap indexed or full,
     -- traverse down the tree at the appropriate indices.
@@ -1485,6 +1488,8 @@ subsetWith comp = go0 0
       subsetBitmapIndexed (go0 (s+bitsPerSubkey)) b1 ls1 fullNodeMask ls2
     go s (Full ls1) (Full ls2) =
       subsetBitmapIndexed (go0 (s+bitsPerSubkey)) fullNodeMask ls1 fullNodeMask ls2
+    go s (Full ls1) (BitmapIndexed b2 ls2) =
+      subsetBitmapIndexed (go0 (s+bitsPerSubkey)) fullNodeMask ls1 b2 ls2
 
     -- TODO: I'm not sure about these cases and need help. If we cleared up all
     -- these cases, we can replace them with a catch-all case go _ _ _ = False
@@ -1498,9 +1503,6 @@ subsetWith comp = go0 0
     -- A bitmap always contains more than one entry, hence it cannot be a subset of a leaf.
     go _ (BitmapIndexed {}) (Leaf {}) = False
     go _ (Full {}) (Leaf {}) = False
-
-    -- A bitmap index node contains less nodes than a full node. Hence it cannot be a subset.
-    go _ (Full {}) (BitmapIndexed {}) = False
 
 
 -- | /O(min n m))/ hecks if a bitmap indexed node is a subset of another.

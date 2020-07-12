@@ -239,22 +239,36 @@ pSubsetUnion xs ys =
       m2 = HM.fromList ys
   in HM.subset m1 (HM.union m1 m2)
 
+pNotSubsetUnion :: [(Key, Int)] -> [(Key, Int)] -> Bool
+pNotSubsetUnion xs ys =
+  let m1 = HM.fromList xs
+      m2 = HM.fromList ys
+  in not (HM.subset m1 m2) ⇒ HM.subset m1 (HM.union m1 m2)
+
+(⇒) :: Bool -> Bool -> Bool
+p ⇒ q = not p || q
+
 pSubsetDelete :: [(Key,Int)] -> Bool
 pSubsetDelete xs@((k,_):_) =
   let m = HM.fromList xs
   in HM.subset (HM.delete k m) m
 pSubsetDelete [] = True
 
-pNoSubsetDelete :: [(Key,Int)] -> Bool
-pNoSubsetDelete xs@((k,_):_) =
+pNotSubsetDelete :: [(Key,Int)] -> Bool
+pNotSubsetDelete xs@((k,_):_) =
   let m = HM.fromList xs
   in not (HM.subset m (HM.delete k m))
-pNoSubsetDelete [] = True
+pNotSubsetDelete [] = True
 
 pSubsetInsert :: Key -> Int -> [(Key,Int)] -> Bool
 pSubsetInsert k v xs =
   let m = HM.fromList xs
-  in HM.member k m || HM.subset m (HM.insert k v m)
+  in not (HM.member k m) ⇒ HM.subset m (HM.insert k v m)
+
+pNotSubsetInsert :: Key -> Int -> [(Key,Int)] -> Bool
+pNotSubsetInsert k v xs =
+  let m = HM.fromList xs
+  in not (HM.member k m) ⇒ not (HM.subset (HM.insert k v m) m)
 
 pNoSubsetInsert :: Key -> Int -> [(Key,Int)] -> Bool
 pNoSubsetInsert k v xs =
@@ -441,98 +455,99 @@ tests :: [Test]
 tests =
     [
     -- Instances
-      -- testGroup "instances"
-      -- [ testProperty "==" pEq
-      -- , testProperty "/=" pNeq
-      -- , testProperty "compare reflexive" pOrd1
-      -- , testProperty "compare transitive" pOrd2
-      -- , testProperty "compare antisymmetric" pOrd3
-      -- , testProperty "Ord => Eq" pOrdEq
-      -- , testProperty "Read/Show" pReadShow
-      -- , testProperty "Functor" pFunctor
-      -- , testProperty "Foldable" pFoldable
-      -- , testProperty "Hashable" pHashable
-      -- ]
+    testGroup "instances"
+      [ testProperty "==" pEq
+      , testProperty "/=" pNeq
+      , testProperty "compare reflexive" pOrd1
+      , testProperty "compare transitive" pOrd2
+      , testProperty "compare antisymmetric" pOrd3
+      , testProperty "Ord => Eq" pOrdEq
+      , testProperty "Read/Show" pReadShow
+      , testProperty "Functor" pFunctor
+      , testProperty "Foldable" pFoldable
+      , testProperty "Hashable" pHashable
+      ]
     -- Basic interface
-    testGroup "basic interface"
+    , testGroup "basic interface"
       [
-      --   testProperty "size" pSize
-      -- , testProperty "member" pMember
-      -- , testProperty "lookup" pLookup
-      -- , testProperty "!?" pLookupOperator
-      -- , testProperty "insert" pInsert
-      -- , testProperty "delete" pDelete
-      -- , testProperty "deleteCollision" pDeleteCollision
-      -- , testProperty "insertWith" pInsertWith
-      -- , testProperty "adjust" pAdjust
-      -- , testProperty "updateAdjust" pUpdateAdjust
-      -- , testProperty "updateDelete" pUpdateDelete
-      -- , testProperty "alterAdjust" pAlterAdjust
-      -- , testProperty "alterInsert" pAlterInsert
-      -- , testProperty "alterDelete" pAlterDelete
-      -- , testProperty "alterF" pAlterF
-      -- , testProperty "alterFAdjust" pAlterFAdjust
-      -- , testProperty "alterFInsert" pAlterFInsert
-      -- , testProperty "alterFInsertWith" pAlterFInsertWith
-      -- , testProperty "alterFDelete" pAlterFDelete
-      -- , testProperty "alterFLookup" pAlterFLookup
-       testGroup "subset"
+        testProperty "size" pSize
+      , testProperty "member" pMember
+      , testProperty "lookup" pLookup
+      , testProperty "!?" pLookupOperator
+      , testProperty "insert" pInsert
+      , testProperty "delete" pDelete
+      , testProperty "deleteCollision" pDeleteCollision
+      , testProperty "insertWith" pInsertWith
+      , testProperty "adjust" pAdjust
+      , testProperty "updateAdjust" pUpdateAdjust
+      , testProperty "updateDelete" pUpdateDelete
+      , testProperty "alterAdjust" pAlterAdjust
+      , testProperty "alterInsert" pAlterInsert
+      , testProperty "alterDelete" pAlterDelete
+      , testProperty "alterF" pAlterF
+      , testProperty "alterFAdjust" pAlterFAdjust
+      , testProperty "alterFInsert" pAlterFInsert
+      , testProperty "alterFInsertWith" pAlterFInsertWith
+      , testProperty "alterFDelete" pAlterFDelete
+      , testProperty "alterFLookup" pAlterFLookup
+      , testGroup "subset"
         [ testProperty "m ⊆ m" pSubsetReflexive
         , testProperty "m1 ⊆ m1 ∪ m2" pSubsetUnion
+        , testProperty "m1 ⊈ m2  ⇒  m1 ∪ m2 ⊈ m1" pNotSubsetUnion
         , testProperty "delete k m ⊆ m" pSubsetDelete
-        , testProperty "m ⊈ delete k m" pNoSubsetDelete
+        , testProperty "m ⊈ delete k m " pNotSubsetDelete
         , testProperty "k ∉ m  ⇒  m ⊆ insert k v m" pSubsetInsert
-        , testProperty "k ∉ m  ⇒  insert k v m ⊈ m" pNoSubsetInsert
+        , testProperty "k ∉ m  ⇒  insert k v m ⊈ m" pNotSubsetInsert
         ]
       ]
     -- Combine
---     , testProperty "union" pUnion
---     , testProperty "unionWith" pUnionWith
---     , testProperty "unionWithKey" pUnionWithKey
---     , testProperty "unions" pUnions
---     -- Transformations
---     , testProperty "map" pMap
---     , testProperty "traverse" pTraverse
---     -- Folds
---     , testGroup "folds"
---       [ testProperty "foldr" pFoldr
---       , testProperty "foldl" pFoldl
--- #if MIN_VERSION_base(4,10,0)
---       , testProperty "bifoldMap" pBifoldMap
---       , testProperty "bifoldr" pBifoldr
---       , testProperty "bifoldl" pBifoldl
--- #endif
---       , testProperty "foldrWithKey" pFoldrWithKey
---       , testProperty "foldlWithKey" pFoldlWithKey
---       , testProperty "foldrWithKey'" pFoldrWithKey'
---       , testProperty "foldlWithKey'" pFoldlWithKey'
---       , testProperty "foldl'" pFoldl'
---       , testProperty "foldr'" pFoldr'
---       , testProperty "foldMapWithKey" pFoldMapWithKey
---       ]
---     , testGroup "difference and intersection"
---       [ testProperty "difference" pDifference
---       , testProperty "differenceWith" pDifferenceWith
---       , testProperty "intersection" pIntersection
---       , testProperty "intersectionWith" pIntersectionWith
---       , testProperty "intersectionWithKey" pIntersectionWithKey
---       ]
---     -- Filter
---     , testGroup "filter"
---       [ testProperty "filter" pFilter
---       , testProperty "filterWithKey" pFilterWithKey
---       , testProperty "mapMaybe" pMapMaybe
---       , testProperty "mapMaybeWithKey" pMapMaybeWithKey
---       ]
---     -- Conversions
---     , testGroup "conversions"
---       [ testProperty "elems" pElems
---       , testProperty "keys" pKeys
---       , testProperty "fromList" pFromList
---       , testProperty "fromListWith" pFromListWith
---       , testProperty "fromListWithKey" pFromListWithKey
---       , testProperty "toList" pToList
---       ]
+    , testProperty "union" pUnion
+    , testProperty "unionWith" pUnionWith
+    , testProperty "unionWithKey" pUnionWithKey
+    , testProperty "unions" pUnions
+    -- Transformations
+    , testProperty "map" pMap
+    , testProperty "traverse" pTraverse
+    -- Folds
+    , testGroup "folds"
+      [ testProperty "foldr" pFoldr
+      , testProperty "foldl" pFoldl
+#if MIN_VERSION_base(4,10,0)
+      , testProperty "bifoldMap" pBifoldMap
+      , testProperty "bifoldr" pBifoldr
+      , testProperty "bifoldl" pBifoldl
+#endif
+      , testProperty "foldrWithKey" pFoldrWithKey
+      , testProperty "foldlWithKey" pFoldlWithKey
+      , testProperty "foldrWithKey'" pFoldrWithKey'
+      , testProperty "foldlWithKey'" pFoldlWithKey'
+      , testProperty "foldl'" pFoldl'
+      , testProperty "foldr'" pFoldr'
+      , testProperty "foldMapWithKey" pFoldMapWithKey
+      ]
+    , testGroup "difference and intersection"
+      [ testProperty "difference" pDifference
+      , testProperty "differenceWith" pDifferenceWith
+      , testProperty "intersection" pIntersection
+      , testProperty "intersectionWith" pIntersectionWith
+      , testProperty "intersectionWithKey" pIntersectionWithKey
+      ]
+    -- Filter
+    , testGroup "filter"
+      [ testProperty "filter" pFilter
+      , testProperty "filterWithKey" pFilterWithKey
+      , testProperty "mapMaybe" pMapMaybe
+      , testProperty "mapMaybeWithKey" pMapMaybeWithKey
+      ]
+    -- Conversions
+    , testGroup "conversions"
+      [ testProperty "elems" pElems
+      , testProperty "keys" pKeys
+      , testProperty "fromList" pFromList
+      , testProperty "fromListWith" pFromListWith
+      , testProperty "fromListWithKey" pFromListWithKey
+      , testProperty "toList" pToList
+      ]
     ]
 
 ------------------------------------------------------------------------
