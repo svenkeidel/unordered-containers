@@ -83,6 +83,8 @@ main = do
           , bench "alterFInsert" $ whnf (alterFInsert elems) HM.empty
           , bench "alterInsert-dup" $ whnf (alterInsert elemsDuplicates) map
           , bench "alterFInsert-dup" $ whnf (alterFInsert elems) map
+          , bench "isSubmapOf" $ whnf (HM.isSubmapOf mapSubset) map
+          , bench "isSubmapOfNaive" $ whnf (isSubmapOfNaive mapSubset) map
 
           --   -- Combine
           -- , bench "union" $ whnf (HM.union map) map2
@@ -174,40 +176,56 @@ instance NFData B where
 --       let subsetSize = round (fromIntegral n * 0.5 :: Double) :: Int
 --       in take subsetSize elements
 
--- It is important to inline the following functions to allow GHC to specialize
--- the benchmarked functions to specific types.
+-- It is important that GHC specializes the benchmarked functions to specific types.
+-- However, this may not happen if the following utility functions are not inlined.
+-- Instead, we force GHC to inline these functions with the rewrite rules below.
 
 type IsKey k = (Ord k, Hashable k, Eq k)
 
-benchMap :: (forall k. (IsKey k) => Env M.Map k Int -> [Benchmark])
-         -> Benchmark
-benchMap f = bgroup "Map" $ benchSuite M.fromList f
-{-# INLINE benchMap #-}
+benchMap :: (forall k. IsKey k => Env M.Map k Int -> [Benchmark]) -> Benchmark
+benchMap _ = undefined
+{-# NOINLINE benchMap #-}
 
-benchHashMapPackage :: (forall k. (IsKey k) => Env IHM.Map k Int -> [Benchmark])
-                    -> Benchmark
-benchHashMapPackage f = bgroup "hashmap/Map" $ benchSuite IHM.fromList f
-{-# INLINE benchHashMapPackage #-}
+benchHashMapPackage :: (forall k. IsKey k => Env IHM.Map k Int -> [Benchmark]) -> Benchmark
+benchHashMapPackage _ = undefined
+{-# NOINLINE benchHashMapPackage #-}
 
 benchIntMap :: (Env IntMap Int Int -> [Benchmark]) -> Benchmark
-benchIntMap f = env (setupInt (IntMap . IM.fromList)) $ \e -> bgroup "IntMap" $ f e
-{-# INLINE benchIntMap #-}
+benchIntMap _ = undefined
+{-# NOINLINE benchIntMap #-}
 
-benchHashMap :: (forall k. (IsKey k) => Env HM.HashMap k Int -> [Benchmark])
-             -> Benchmark
-benchHashMap f = bgroup "HashMap" $ benchSuite HM.fromList f
-{-# INLINE benchHashMap #-}
+benchHashMap :: (forall k. IsKey k => Env HM.HashMap k Int -> [Benchmark]) -> Benchmark
+benchHashMap _ = undefined
+{-# NOINLINE benchHashMap #-}
 
-benchSuite :: (NFData (m String Int), NFData (m ByteString Int), NFData (m Int Int))
-           => (forall k. (IsKey k) => [(k,Int)] -> m k Int)
-           -> (forall k. (IsKey k) => Env m k Int -> [Benchmark])
-           -> [Benchmark]
-benchSuite fromList f =
-  [ env (setupString fromList)     $ \e -> bgroup "String" $ f e
-  , env (setupByteString fromList) $ \e -> bgroup "ByteString" $ f e
-  , env (setupInt fromList)        $ \e -> bgroup "Int" $ f e
-  ]
-{-# INLINE benchSuite #-}
+{-# RULES
+  "force-inline-benchMap" forall (f :: forall k. (IsKey k) => Env M.Map k Int -> [Benchmark]).
+    benchMap f = bgroup "Map" $
+      [ env (setupString M.fromList)     $ \e -> bgroup "String" $ f e
+      , env (setupByteString M.fromList) $ \e -> bgroup "ByteString" $ f e
+      , env (setupInt M.fromList)        $ \e -> bgroup "Int" $ f e
+      ]
+  #-}
+{-# RULES
+  "force-inline-benchHashMapPackage" forall (f :: forall k. (IsKey k) => Env IHM.Map k Int -> [Benchmark]).
+    benchHashMapPackage f = bgroup "hashmap/Map" $
+      [ env (setupString IHM.fromList)     $ \e -> bgroup "String" $ f e
+      , env (setupByteString IHM.fromList) $ \e -> bgroup "ByteString" $ f e
+      , env (setupInt IHM.fromList)        $ \e -> bgroup "Int" $ f e
+      ]
+  #-}
+{-# RULES
+  "force-inline-benchHashMap" forall (f :: forall k. (IsKey k) => Env HM.HashMap k Int -> [Benchmark]).
+    benchHashMap f = bgroup "HashMap" $
+      [ env (setupString HM.fromList)     $ \e -> bgroup "String" $ f e
+      , env (setupByteString HM.fromList) $ \e -> bgroup "ByteString" $ f e
+      , env (setupInt HM.fromList)        $ \e -> bgroup "Int" $ f e
+      ]
+  #-}
+{-# RULES
+  "force-inline-benchIntMap" forall (f :: Env IntMap Int Int -> [Benchmark]).
+    benchIntMap f = env (setupInt (IntMap . IM.fromList)) $ \e -> bgroup "IntMap" $ f e
+  #-}
 
 data Env m k v = Env
   { keys            :: ![k]
@@ -257,6 +275,7 @@ takeSubset elements =
   let subsetSize = round (fromIntegral n * 0.5 :: Double) :: Int
   in take subsetSize elements
 
+n :: Int
 n = 2^(12::Int)
 
 ------------------------------------------------------------------------
@@ -330,6 +349,10 @@ alterFDelete xs m0 =
                             -> HM.HashMap String Int #-}
 {-# SPECIALIZE alterFDelete :: [BS.ByteString] -> HM.HashMap BS.ByteString Int
                             -> HM.HashMap BS.ByteString Int #-}
+
+{-# SPECIALIZE HM.isSubmapOf :: HM.HashMap Int Int -> HM.HashMap Int Int -> Bool #-}
+{-# SPECIALIZE HM.isSubmapOf :: HM.HashMap String Int -> HM.HashMap String Int -> Bool #-}
+{-# SPECIALIZE HM.isSubmapOf :: HM.HashMap BS.ByteString Int -> HM.HashMap BS.ByteString Int -> Bool #-}
 
 isSubmapOfNaive :: (Eq k, Hashable k) => HM.HashMap k Int -> HM.HashMap k Int -> Bool
 isSubmapOfNaive m1 m2 = and [ Just v1 == HM.lookup k1 m2 | (k1,v1) <- HM.toList m1 ]
